@@ -1,3 +1,12 @@
+python-validity (0.15~ppa2) noble; urgency=medium
+
+  * Change all write paths to /var/run/python-validity
+  * Use a different partition table + signature for 0090 devices
+  * Docs fixes
+  * switch to noble
+
+ -- unicorn <viktor.dragomiretskyy@gmail.com>  Mon, 09 Jun 2025 20:19:55 +1200
+
 python-validity (0.14~ppa1) bionic; urgency=medium
 
   * Retry establishing TLS on Resume in case if it was already established. 

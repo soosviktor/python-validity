@@ -90,6 +90,7 @@ def unpad(b: bytes):
 class Tls:
     def __init__(self, usb: Usb):
         self.usb = usb
+        self.trace_enabled = False
         self.reset()
         try:
             with open('/sys/class/dmi/id/product_name', 'r') as node:
@@ -103,7 +104,6 @@ class Tls:
         self.set_hwkey(product_name=product_name, serial_number=product_serial)
 
     def reset(self):
-        self.trace_enabled = False
         self.secure_rx = False
         self.secure_tx = False
 

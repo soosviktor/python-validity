@@ -63,6 +63,7 @@ class Usb:
 
         self.dev = dev
         self.dev.default_timeout = 15000
+        dev.set_configuration()
 
     def close(self):
         if self.dev is not None:
@@ -110,7 +111,8 @@ class Usb:
         try:
             resp = self.dev.read(130, 1024 * 1024, timeout=10000)
             resp = bytes(resp)
-            self.trace('<130< %s' % hexlify(resp).decode())
+            self.trace('<130< %d bytes' % len(resp))
+            #self.trace('<130< %s' % hexlify(resp).decode())
             return resp
         except Exception as e:
             self.trace('<130< Error: %s' % repr(e))
