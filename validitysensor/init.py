@@ -5,7 +5,7 @@ from validitysensor.init_data_dir import init_data_dir
 from validitysensor.flash import read_tls_flash
 from validitysensor.init_db import init_db
 from validitysensor.init_flash import init_flash, load_tls_from_host
-from validitysensor.sensor import sensor, reboot, RebootException
+from validitysensor.sensor import sensor, reboot, RebootException, identify_sensor
 from validitysensor.tls import tls
 from validitysensor.upload_fwext import upload_fwext
 from validitysensor.usb import usb, is_device_81
@@ -28,25 +28,44 @@ def close():
 
 def open_common():
     init_data_dir()
+
+    if is_device_81():
+        # The 06cb:0081 may be in TLS-encrypted state from a previous session.
+        # Reset the USB device to get it back to a clean state.
+        try:
+            usb.dev.reset()
+            import time
+            time.sleep(2)
+        except Exception:
+            pass
+
     init_flash()
     usb.send_init()
 
     if is_device_81():
-        # Flashless device: load TLS data from host filesystem instead of flash
-        tls_data = load_tls_from_host()
-        if tls_data is None:
-            raise Exception('No TLS data found for 06cb:0081. Run init_flash first.')
-        tls.parse_tls_flash(tls_data)
-        tls.open()
-        # Skip firmware extension upload -- not needed for 06cb:0081
-        logging.info('Skipping fwext upload for 06cb:0081 (not needed)')
+        # Flashless device: load TLS data from host filesystem
+        # If init_flash_81 just did a fresh pairing, TLS is already open
+        if not hasattr(tls, 'skey') or tls.skey is None:
+            tls_data = load_tls_from_host()
+            if tls_data is None:
+                raise Exception('No TLS data found for 06cb:0081. Run init_flash first.')
+            tls.parse_tls_flash(tls_data)
+            tls.open()
+        logging.info('TLS session ready for 06cb:0081')
     else:
         tls.parse_tls_flash(read_tls_flash())
         tls.open()
         upload_fwext()
 
-    sensor.open()
-    init_db()
+    if is_device_81():
+        # Skip full sensor calibration and DB init for 06cb:0081
+        # This device uses host-based storage, sensor DB commands return 0x04b4
+        logging.info('Skipping sensor calibration and DB init for 06cb:0081')
+        sensor.device_info = identify_sensor()
+        logging.info('Sensor: %s' % sensor.device_info)
+    else:
+        sensor.open()
+        init_db()
 
     # We must register atexit only after we opened usb device,
     # so that our atexit handler is called before pyusb's one and we can still talk to the device

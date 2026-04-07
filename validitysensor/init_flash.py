@@ -152,9 +152,13 @@ def init_flash_81():
 
     logging.info('No TLS data found for 06cb:0081. Performing initial TLS setup...')
 
-    # Check current flash state — may need factory reset if partitions exist from prior run
-    info = get_flash_info()
-    if len(info.partitions) > 0:
+    # Check current flash state via raw USB (TLS not yet established)
+    rsp = usb.cmd(unhex('3e'))
+    assert_status(rsp)
+    rsp_data = rsp[2:]
+    from struct import unpack as _unpack
+    _pcnt = _unpack('<HHHHHHH', rsp_data[:0xe])[6]
+    if _pcnt > 0:
         logging.info('Device has %d partitions from prior run. Factory resetting...' % len(info.partitions))
         from .sensor import factory_reset, RebootException
         try:
@@ -167,7 +171,9 @@ def init_flash_81():
         usb.close()
         usb.open(vendor=0x06cb, product=0x0081)
         usb.send_init()
-        info = get_flash_info()
+
+    # Get flash info via raw USB for partition command
+    info = get_flash_info()
 
     assert_status(usb.cmd(reset_blob))
 
