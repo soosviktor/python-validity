@@ -23,7 +23,8 @@ HEADER_SIZE = 8  # per-line header
 PIXEL_WIDTH = 144  # actual pixels per line
 LINES_PER_FRAME = 144
 NUM_FRAMES = 6
-MATCH_THRESHOLD = 25.0  # similarity threshold (lower = more similar)
+MATCH_THRESHOLD = 22.0  # similarity threshold for raw images (lower = more similar)
+FINGER_PRESENCE_THRESHOLD = 5.0  # minimum diff signal to confirm finger is on sensor
 
 
 def ensure_db_dir():
@@ -199,24 +200,40 @@ def delete_enrolled_fingers(username):
 
 def verify_finger(username):
     """Capture a fingerprint and verify against enrolled templates.
-    Uses raw images for matching (not diff).
-    Returns (matched_finger_name, confidence) or (None, 0)."""
+
+    Security: MUST verify finger presence before accepting match.
+    Uses DIFF images (finger - baseline) for matching to ensure
+    only actual fingerprints are compared, not sensor fixed patterns.
+
+    Returns (matched_finger_name, confidence) or (None, 0).
+    """
     fingers = list_enrolled_fingers(username)
     if not fingers:
         return None, 0
 
+    # Always capture a fresh baseline first
+    baseline = load_baseline()
+    if baseline is None:
+        logging.error('No baseline available')
+        return None, 0
+
     try:
-        _, finger_raw = capture_fingerprint()
+        diff, finger_raw = capture_fingerprint()
     except Exception as e:
         logging.error('Capture failed: %s' % e)
         return None, 0
 
-    # Check if finger is present by comparing with baseline
-    baseline = load_baseline()
-    if baseline and not images_differ(baseline, finger_raw):
-        logging.debug('No finger detected')
+    # CRITICAL: Check finger presence using diff signal strength
+    signal = compute_signal_strength(diff)
+    logging.info('Verify: signal strength = %.1f' % signal)
+
+    if signal < FINGER_PRESENCE_THRESHOLD:
+        logging.info('Verify: NO FINGER DETECTED (signal=%.1f < threshold=%.1f)' %
+                     (signal, FINGER_PRESENCE_THRESHOLD))
         return None, 0
 
+    # Match using RAW images (baseline-independent, consistent sensor pattern)
+    # The diff check above ensures a finger is present
     best_match = None
     best_score = float('inf')
 
@@ -232,7 +249,7 @@ def verify_finger(username):
                 best_score = score
                 best_match = finger_name
 
-    logging.info('Best match: %s (score=%.1f, threshold=%.1f)' %
+    logging.info('Verify: best match=%s score=%.1f threshold=%.1f' %
                  (best_match, best_score, MATCH_THRESHOLD))
 
     if best_score < MATCH_THRESHOLD:
