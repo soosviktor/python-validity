@@ -16,8 +16,12 @@ from .flash import write_flash, erase_flash, call_cleanups, PartitionInfo, get_f
 from .hw_tables import FlashIcInfo
 from .sensor import reboot, RomInfo
 from .tls import tls, hs_key, crt_hardcoded
-from .usb import usb
+from .usb import usb, is_device_81
 from .util import assert_status, unhex
+
+# Host-based TLS storage for flashless devices (06cb:0081)
+TLS_HOST_STORAGE_DIR = '/var/lib/python-validity/'
+TLS_HOST_STORAGE_PATH = TLS_HOST_STORAGE_DIR + 'tls-06cb0081.bin'
 
 flash_layout_hardcoded = [
     #             id  type  access  offset       size
@@ -118,7 +122,100 @@ def partition_flash(info: FlashInfo, layout: typing.List[PartitionInfo], signatu
     # ^ TODO - figure out what the rest of rsp means
 
 
+def save_tls_to_host():
+    """Save TLS session data to host filesystem for flashless devices."""
+    if not os.path.isdir(TLS_HOST_STORAGE_DIR):
+        os.makedirs(TLS_HOST_STORAGE_DIR, exist_ok=True)
+    with open(TLS_HOST_STORAGE_PATH, 'wb') as f:
+        f.write(tls.make_tls_flash())
+    logging.info('TLS data saved to host file: %s' % TLS_HOST_STORAGE_PATH)
+
+
+def load_tls_from_host():
+    """Load TLS session data from host filesystem for flashless devices."""
+    if not os.path.isfile(TLS_HOST_STORAGE_PATH):
+        return None
+    with open(TLS_HOST_STORAGE_PATH, 'rb') as f:
+        return f.read()
+
+
+def init_flash_81():
+    """Initialize TLS for the flashless 06cb:0081 device.
+
+    This device has no working flash (all flash ops return 0x04af).
+    TLS data is persisted on the host filesystem instead.
+    """
+    existing = load_tls_from_host()
+    if existing is not None:
+        logging.info('Found existing TLS data on host for 06cb:0081.')
+        return
+
+    logging.info('No TLS data found for 06cb:0081. Performing initial TLS setup...')
+
+    # Check current flash state — may need factory reset if partitions exist from prior run
+    info = get_flash_info()
+    if len(info.partitions) > 0:
+        logging.info('Device has %d partitions from prior run. Factory resetting...' % len(info.partitions))
+        from .sensor import factory_reset, RebootException
+        try:
+            factory_reset()
+        except RebootException:
+            pass
+        import time
+        time.sleep(7)
+        # Device reboots — need to re-open USB and re-init
+        usb.close()
+        usb.open(vendor=0x06cb, product=0x0081)
+        usb.send_init()
+        info = get_flash_info()
+
+    assert_status(usb.cmd(reset_blob))
+
+    skey = ec.generate_private_key(ec.SECP256R1(), crypto_backend)
+    snums = skey.private_numbers()
+    client_private = snums.private_value
+    client_public = snums.public_numbers
+
+    layout = flash_layout_hardcoded
+    signature = partition_signature
+
+    partition_flash(info, layout, signature, client_public)
+
+    RomInfo.get()
+
+    try:
+        rsp = usb.cmd(unhex('50'))
+        assert_status(rsp)
+    finally:
+        call_cleanups()
+
+    rsp = rsp[2:]
+    l, = unpack('<L', rsp[:4])
+
+    if len(rsp) != l:
+        raise Exception('Length mismatch')
+
+    zeroes, rsp = rsp[4:-400], rsp[-400:]
+
+    if zeroes != b'\0' * len(zeroes):
+        raise Exception('Expected zeroes')
+
+    tls.handle_ecdh(rsp)
+    tls.handle_priv(encrypt_key(client_private, client_public))
+    tls.open()
+
+    # Save TLS data to host filesystem instead of flash
+    save_tls_to_host()
+
+    # No reboot needed for 06cb:0081 — no firmware extension to load
+    logging.info('TLS pairing complete for 06cb:0081. No reboot needed.')
+
+
 def init_flash():
+    if is_device_81():
+        init_flash_81()
+        return
+
     info = get_flash_info()
 
     if len(info.partitions) > 0:

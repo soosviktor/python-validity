@@ -18,6 +18,7 @@ class SupportedDevices(Enum):
     DEV_97 = (0x138a, 0x0097)
     DEV_9d = (0x138a, 0x009d)
     DEV_9a = (0x06cb, 0x009a)
+    DEV_81 = (0x06cb, 0x0081)
 
     @classmethod
     def from_usbid(cls, vendorid, productid):
@@ -144,3 +145,9 @@ class Usb:
 
 
 usb = Usb()
+
+
+def is_device_81():
+    """Check if the current device is the 06cb:0081 (flashless, host-storage mode)."""
+    dev = usb.usb_dev()
+    return dev is not None and dev.idVendor == 0x06cb and dev.idProduct == 0x0081

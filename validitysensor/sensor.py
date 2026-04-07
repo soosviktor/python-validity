@@ -17,14 +17,14 @@ from .hw_tables import dev_info_lookup
 from .init_data_dir import PYTHON_VALIDITY_DATA_DIR
 from .table_types import SensorTypeInfo, SensorCaptureProg
 from .tls import tls
-from .usb import usb, CancelledException
+from .usb import usb, CancelledException, is_device_81
 from .util import assert_status, unhex
 
 # TODO: this should be specific to an individual device (system may have more than one sensor)
 calib_data_path = PYTHON_VALIDITY_DATA_DIR + 'calib-data.bin'
 
 line_update_type1_devices = [
-    0xB5, 0x885, 0xB3, 0x143B, 0x1055, 0xE1, 0x8B1, 0xEA, 0xE4, 0xED, 0x1825, 0x1FF5, 0x199
+    0xB5, 0x885, 0xB3, 0x143B, 0x1055, 0xE1, 0x8B1, 0xEA, 0xE4, 0xED, 0x1825, 0x1FF5, 0x199, 0x0c6d
 ]
 
 
@@ -236,6 +236,10 @@ class Sensor:
             self.key_calibration_line = 0x48  # TODO 48 is just a guess -- find it
             self.calibration_frames = 6  # TODO: workout where it's really comming from
             self.calibration_iterations = 0
+        elif self.device_info.type == 0x0c6d:
+            self.key_calibration_line = 0x48  # 144 lines, similar to 0xdb type
+            self.calibration_frames = 6  # confirmed: 6 frames of 144 lines
+            self.calibration_iterations = 3
         else:
             raise Exception('Device %s is not supported (sensor type 0x%x)' %
                             (self.device_info.name, self.device_info.type))
@@ -620,6 +624,14 @@ class Sensor:
         return pack('<BHH', 2, self.bytes_per_line, req_lines) + prg.merge_chunks(chunks)
 
     def persist_clean_slate(self, clean_slate: bytes):
+        if is_device_81():
+            # No flash available -- persist clean slate to host filesystem
+            clean_slate_path = PYTHON_VALIDITY_DATA_DIR + 'clean-slate-06cb0081.bin'
+            with open(clean_slate_path, 'wb') as f:
+                f.write(clean_slate)
+            logging.info('Clean slate saved to host file (no flash).')
+            return
+
         start = read_flash(6, 0, 0x44)
 
         if start != b'\xff' * 0x44:
@@ -633,6 +645,30 @@ class Sensor:
         write_flash_all(6, 0, clean_slate)
 
     def check_clean_slate(self):
+        if is_device_81():
+            # No flash -- check host filesystem for clean slate
+            clean_slate_path = PYTHON_VALIDITY_DATA_DIR + 'clean-slate-06cb0081.bin'
+            if not os.path.isfile(clean_slate_path):
+                return False
+            with open(clean_slate_path, 'rb') as f:
+                data = f.read()
+            if len(data) < 0x44:
+                return False
+            magic, = unpack('<H', data[:2])
+            if magic != 0x5002:
+                return False
+            l, = unpack('<H', data[2:4])
+            hs = data[4:0x24]
+            zeroes = data[0x24:0x44]
+            if zeroes != b'\0' * 0x20:
+                logging.warning('Unexpected contents in calibration host file')
+                return False
+            img = data[0x44:0x44 + l]
+            if hs != sha256(img).digest():
+                logging.warning('Calibration host file hash mismatch')
+                return False
+            return True
+
         start = read_flash(6, 0, 0x44)
         magic, l = unpack('<HH', start[:4])
         start = start[4:]

@@ -4,11 +4,11 @@ import logging
 from validitysensor.init_data_dir import init_data_dir
 from validitysensor.flash import read_tls_flash
 from validitysensor.init_db import init_db
-from validitysensor.init_flash import init_flash
+from validitysensor.init_flash import init_flash, load_tls_from_host
 from validitysensor.sensor import sensor, reboot, RebootException
 from validitysensor.tls import tls
 from validitysensor.upload_fwext import upload_fwext
-from validitysensor.usb import usb
+from validitysensor.usb import usb, is_device_81
 
 
 def close():
@@ -30,9 +30,21 @@ def open_common():
     init_data_dir()
     init_flash()
     usb.send_init()
-    tls.parse_tls_flash(read_tls_flash())
-    tls.open()
-    upload_fwext()
+
+    if is_device_81():
+        # Flashless device: load TLS data from host filesystem instead of flash
+        tls_data = load_tls_from_host()
+        if tls_data is None:
+            raise Exception('No TLS data found for 06cb:0081. Run init_flash first.')
+        tls.parse_tls_flash(tls_data)
+        tls.open()
+        # Skip firmware extension upload -- not needed for 06cb:0081
+        logging.info('Skipping fwext upload for 06cb:0081 (not needed)')
+    else:
+        tls.parse_tls_flash(read_tls_flash())
+        tls.open()
+        upload_fwext()
+
     sensor.open()
     init_db()
 
