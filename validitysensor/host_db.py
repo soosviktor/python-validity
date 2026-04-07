@@ -198,20 +198,12 @@ def delete_enrolled_fingers(username):
     logging.info('Deleted all enrollments for %s' % username)
 
 
-def verify_finger(username):
-    """Capture a fingerprint and verify against enrolled templates.
-
-    Security: MUST verify finger presence before accepting match.
-    Uses DIFF images (finger - baseline) for matching to ensure
-    only actual fingerprints are compared, not sensor fixed patterns.
-
-    Returns (matched_finger_name, confidence) or (None, 0).
-    """
+def verify_finger_once(username):
+    """Single capture + verify attempt. Returns (matched, score) or (None, 0)."""
     fingers = list_enrolled_fingers(username)
     if not fingers:
         return None, 0
 
-    # Always capture a fresh baseline first
     baseline = load_baseline()
     if baseline is None:
         logging.error('No baseline available')
@@ -223,17 +215,12 @@ def verify_finger(username):
         logging.error('Capture failed: %s' % e)
         return None, 0
 
-    # CRITICAL: Check finger presence using diff signal strength
     signal = compute_signal_strength(diff)
-    logging.info('Verify: signal strength = %.1f' % signal)
+    logging.info('Verify: signal=%.1f' % signal)
 
     if signal < FINGER_PRESENCE_THRESHOLD:
-        logging.info('Verify: NO FINGER DETECTED (signal=%.1f < threshold=%.1f)' %
-                     (signal, FINGER_PRESENCE_THRESHOLD))
-        return None, 0
+        return 'no_finger', 0
 
-    # Match using RAW images (baseline-independent, consistent sensor pattern)
-    # The diff check above ensures a finger is present
     best_match = None
     best_score = float('inf')
 
@@ -241,7 +228,6 @@ def verify_finger(username):
         enrollment = load_enrollment(username, finger_name)
         if enrollment is None:
             continue
-
         for template_hex in enrollment['templates']:
             template = bytes.fromhex(template_hex)
             score = compute_similarity(finger_raw, template)
@@ -249,9 +235,36 @@ def verify_finger(username):
                 best_score = score
                 best_match = finger_name
 
-    logging.info('Verify: best match=%s score=%.1f threshold=%.1f' %
+    logging.info('Verify: match=%s score=%.1f threshold=%.1f' %
                  (best_match, best_score, MATCH_THRESHOLD))
 
     if best_score < MATCH_THRESHOLD:
         return best_match, best_score
+    return 'wrong_finger', best_score
+
+
+def verify_finger(username, max_attempts=15, retry_delay=1.0):
+    """Capture and verify with retries. Waits for finger, retries on mismatch.
+    Returns (matched_finger_name, confidence) or (None, 0)."""
+    fingers = list_enrolled_fingers(username)
+    if not fingers:
+        return None, 0
+
+    for attempt in range(max_attempts):
+        result, score = verify_finger_once(username)
+
+        if result == 'no_finger':
+            logging.debug('Verify attempt %d: no finger, waiting...' % (attempt + 1))
+            time.sleep(retry_delay)
+            continue
+        elif result == 'wrong_finger':
+            logging.info('Verify attempt %d: wrong finger (score=%.1f)' % (attempt + 1, score))
+            time.sleep(retry_delay)
+            continue
+        elif result is not None:
+            logging.info('Verify: MATCH on attempt %d (%s, score=%.1f)' %
+                         (attempt + 1, result, score))
+            return result, score
+
+    logging.info('Verify: gave up after %d attempts' % max_attempts)
     return None, 0
